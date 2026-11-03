@@ -4,7 +4,6 @@ import {
   PrimaryGeneratedColumn,
   CreateDateColumn,
 } from 'typeorm';
-import { CreateConversationDto } from '../conversations/dto/create-conversation.dto.js';
 
 @Entity('users')
 export class UserEntity {
