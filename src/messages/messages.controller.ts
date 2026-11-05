@@ -11,6 +11,22 @@ import { MessagesService } from './messages.service.js';
 import { CreateMessageDto } from './dto/create-message.dto.js';
 import { UpdateMessageDto } from './dto/update-message.dto.js';
 
+/**
+ * HTTP layer for messages. Mounted at /messages.
+ *
+ *   POST   /messages       create one
+ *   GET    /messages       list all
+ *   GET    /messages/:id   get one
+ *   PATCH  /messages/:id   update one
+ *   DELETE /messages/:id   delete one
+ *
+ * These routes are stubs (see MessagesService). Live chat uses the WebSocket
+ * gateway instead, because WebSockets keep a connection open and let the server
+ * push new messages without the client polling.
+ *
+ * +id converts the URL parameter from string to number; validate it with
+ * ParseIntPipe in a real implementation.
+ */
 @Controller('messages')
 export class MessagesController {
   constructor(private readonly messagesService: MessagesService) {}
