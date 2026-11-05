@@ -1,14 +1,19 @@
+import { ArrayUnique, IsArray, IsInt } from 'class-validator';
+
 /**
- * Request body for POST /conversations.
+ * Body for POST /conversations.
  *
- * Intentionally empty for now: the scaffold route accepts any object and the
- * service ignores it. Once conversations have real fields, add them here, e.g.
+ * The creator is added automatically from the JWT, so they must not be listed
+ * here. `participantIds` contains the other users to invite (it may be empty for
+ * a conversation with yourself).
  *
- *   export class CreateConversationDto {
- *     participantIds: number[];
- *   }
- *
- * Add class-validator decorators (@IsArray, @IsInt, ...) and enable
- * ValidationPipe in main.ts to reject malformed requests automatically.
+ * Validation:
+ *   - must be an array of integers (no strings/objects)
+ *   - duplicates are rejected
  */
-export class CreateConversationDto {}
+export class CreateConversationDto {
+  @IsArray()
+  @ArrayUnique()
+  @IsInt({ each: true })
+  participantIds: number[];
+}

@@ -16,10 +16,10 @@ import {
  *
  * Because AppModule sets synchronize: true, TypeORM creates this table on boot.
  *
- * SECURITY NOTE: this column stores whatever the caller sends. The current
- * registration endpoint accepts a value called "passwordHash" but nothing in
- * this app hashes it. Add hashing (e.g. argon2/bcrypt) before using this for
- * real accounts.
+ * SECURITY: `password` stores a scrypt hash, never plaintext (see
+ * PasswordService). `select: false` keeps the hash out of normal queries, so a
+ * careless `find()` cannot leak it to an API response. UsersService explicitly
+ * opts in with addSelect() only during login.
  */
 @Entity('users')
 export class UserEntity {
@@ -30,7 +30,8 @@ export class UserEntity {
   @Column({ unique: true })
   username: string;
 
-  @Column()
+  // The scrypt hash in "scrypt$salt$hash" format. Excluded from SELECT by default.
+  @Column({ select: false })
   password: string;
 
   @CreateDateColumn()

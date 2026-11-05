@@ -1,9 +1,12 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { MongooseModule } from '@nestjs/mongoose';
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
+import { AuthModule } from './auth/auth.module.js';
+import { JwtAuthGuard } from './auth/guards/jwt-auth.guard.js';
 import { UsersModule } from './users/users.module.js';
 import { ConversationsModule } from './conversations/conversations.module.js';
 import { MessagesModule } from './messages/messages.module.js';
@@ -23,6 +26,10 @@ import { ConversationEntity } from './conversations/conversation.entity.js';
  *   - PostgreSQL: relational, strongly consistent data (users, conversations).
  *   - MongoDB: high-volume, append-only message history (flexible documents).
  *   - Redis: not a database here; it is the pub/sub backbone for Socket.IO.
+ *
+ * Security:
+ *   JwtAuthGuard is registered globally via APP_GUARD, so every HTTP route and
+ *   WebSocket event requires a valid Bearer token unless it is marked @Public().
  */
 @Module({
   imports: [
@@ -33,6 +40,10 @@ import { ConversationEntity } from './conversations/conversation.entity.js';
       isGlobal: true,
       envFilePath: ['.env', 'src/.env'],
     }),
+
+    // Authentication is @Global(): it exports JwtModule so the global guard and
+    // any feature module can inject JwtService.
+    AuthModule,
 
     // 1. PostgreSQL connection (users + conversations).
     //    forRootAsync lets us read connection details from ConfigService instead
@@ -76,6 +87,15 @@ import { ConversationEntity } from './conversations/conversation.entity.js';
     ChatModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    // Global guard: authenticates every route/handler. @Public() opts out.
+    // APP_GUARD (instead of @UseGuards) means new controllers are secure by
+    // default; a developer must opt out explicitly rather than remember to opt in.
+    {
+      provide: APP_GUARD,
+      useClass: JwtAuthGuard,
+    },
+  ],
 })
 export class AppModule {}

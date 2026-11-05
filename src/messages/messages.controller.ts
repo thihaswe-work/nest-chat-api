@@ -1,58 +1,69 @@
 import {
-  Controller,
-  Get,
-  Post,
   Body,
-  Patch,
-  Param,
+  Controller,
+  DefaultValuePipe,
   Delete,
+  Get,
+  Param,
+  ParseIntPipe,
+  Patch,
+  Post,
+  Query,
 } from '@nestjs/common';
-import { MessagesService } from './messages.service.js';
+import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
 import { CreateMessageDto } from './dto/create-message.dto.js';
 import { UpdateMessageDto } from './dto/update-message.dto.js';
+import { MessagesService } from './messages.service.js';
 
 /**
- * HTTP layer for messages. Mounted at /messages.
+ * HTTP layer for messages. Mounted at /messages. All routes require a JWT.
  *
- *   POST   /messages       create one
- *   GET    /messages       list all
- *   GET    /messages/:id   get one
- *   PATCH  /messages/:id   update one
- *   DELETE /messages/:id   delete one
+ *   POST   /messages?                              { conversationId, body }
+ *   GET    /messages?conversationId=1&limit=50     newest first
+ *   GET    /messages/:id                           one message
+ *   PATCH  /messages/:id                           { body }  (sender only)
+ *   DELETE /messages/:id                           (sender only)
  *
- * These routes are stubs (see MessagesService). Live chat uses the WebSocket
- * gateway instead, because WebSockets keep a connection open and let the server
- * push new messages without the client polling.
+ * The user id comes from @CurrentUser('id'), never from the request body.
+ * Conversation membership and message ownership are enforced in MessagesService.
  *
- * +id converts the URL parameter from string to number; validate it with
- * ParseIntPipe in a real implementation.
+ * `limit` defaults to 50 via DefaultValuePipe and is additionally clamped in the
+ * service. `:id` stays a string because MongoDB ids are ObjectIds, not numbers.
  */
 @Controller('messages')
 export class MessagesController {
   constructor(private readonly messagesService: MessagesService) {}
 
   @Post()
-  create(@Body() createMessageDto: CreateMessageDto) {
-    return this.messagesService.create(createMessageDto);
+  create(@CurrentUser('id') userId: number, @Body() dto: CreateMessageDto) {
+    return this.messagesService.create(userId, dto);
   }
 
   @Get()
-  findAll() {
-    return this.messagesService.findAll();
+  findAll(
+    @CurrentUser('id') userId: number,
+    @Query('conversationId', ParseIntPipe) conversationId: number,
+    @Query('limit', new DefaultValuePipe(50), ParseIntPipe) limit: number,
+  ) {
+    return this.messagesService.findAll(userId, conversationId, limit);
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.messagesService.findOne(+id);
+  findOne(@CurrentUser('id') userId: number, @Param('id') id: string) {
+    return this.messagesService.findOne(userId, id);
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() updateMessageDto: UpdateMessageDto) {
-    return this.messagesService.update(+id, updateMessageDto);
+  update(
+    @CurrentUser('id') userId: number,
+    @Param('id') id: string,
+    @Body() dto: UpdateMessageDto,
+  ) {
+    return this.messagesService.update(userId, id, dto);
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.messagesService.remove(+id);
+  remove(@CurrentUser('id') userId: number, @Param('id') id: string) {
+    return this.messagesService.remove(userId, id);
   }
 }

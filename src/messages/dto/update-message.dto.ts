@@ -1,8 +1,13 @@
+import { IsString, Length } from 'class-validator';
+
 /**
- * Request body for PATCH /messages/:id.
+ * Body for PATCH /messages/:id.
  *
- * Empty placeholder. A realistic update would contain only an editable field,
- * usually the message body, and the service would reject edits from anyone
- * other than the sender.
+ * Only the message body is editable. Ownership is checked in MessagesService:
+ * a user may edit (and delete) only their own messages.
  */
-export class UpdateMessageDto {}
+export class UpdateMessageDto {
+  @IsString()
+  @Length(1, 4000)
+  body: string;
+}

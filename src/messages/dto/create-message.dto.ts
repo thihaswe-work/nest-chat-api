@@ -1,15 +1,17 @@
+import { IsInt, IsString, Length, Min } from 'class-validator';
+
 /**
- * Request body for POST /messages.
+ * Body for POST /messages and (conceptually) the "message:send" WS event.
  *
- * The REST message routes are scaffolding; the working write path is the
- * WebSocket "message:send" event in chat.gateway.ts. If you implement the REST
- * path, add the same fields the gateway uses:
- *
- *   conversationId: number;
- *   senderId: number;
- *   body: string;
- *
- * Validation decorators (class-validator) plus ValidationPipe in main.ts would
- * enforce them.
+ * `senderId` is intentionally absent: the server takes the author from the
+ * verified JWT. Accepting it from the client would let anyone impersonate anyone.
  */
-export class CreateMessageDto {}
+export class CreateMessageDto {
+  @IsInt()
+  @Min(1)
+  conversationId: number;
+
+  @IsString()
+  @Length(1, 4000)
+  body: string;
+}

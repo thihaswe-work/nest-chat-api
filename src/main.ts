@@ -1,5 +1,6 @@
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
+import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module.js';
 import { RedisIoAdapter } from './chat/redis-io.adapter.js';
 
@@ -18,6 +19,20 @@ import { RedisIoAdapter } from './chat/redis-io.adapter.js';
  */
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+
+  // Validate and transform every HTTP request body/query.
+  //   whitelist:            drop properties that have no DTO decorator
+  //   forbidNonWhitelisted: reject the request instead of silently dropping
+  //   transform:            build real DTO class instances
+  //   enableImplicitConversion: convert "42" to 42 for typed @Query/@Param DTOs
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+      transformOptions: { enableImplicitConversion: true },
+    }),
+  );
 
   // ConfigService reads values from the .env file (see AppModule) or the process env.
   const configService = app.get(ConfigService);
