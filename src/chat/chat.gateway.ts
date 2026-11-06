@@ -12,6 +12,7 @@ import { Server, Socket } from 'socket.io';
 import { Model } from 'mongoose';
 import { ConversationsService } from '../conversations/conversations.service.js';
 import type { AuthUser } from '../auth/types/auth-user.js';
+import { getInstanceId } from '../common/instance-info.js';
 import {
   Message,
   MessageDocument,
@@ -69,7 +70,7 @@ export class ChatGateway {
     await this.assertConversationMember(conversationId, user.id);
 
     client.join(`room:${conversationId}`);
-    return { conversationId, joined: true };
+    return { conversationId, joined: true, instance: getInstanceId() };
   }
 
   /**
@@ -121,7 +122,12 @@ export class ChatGateway {
       .to(`room:${data.conversationId}`)
       .emit('message:new', newMessage);
 
-    return { status: 'sent', message: newMessage };
+    return {
+      status: 'sent',
+      message: newMessage,
+      // Lets a client/test see which replica accepted the event.
+      instance: getInstanceId(),
+    };
   }
 
   /** Identity is populated by JwtAuthGuard before any handler runs. */

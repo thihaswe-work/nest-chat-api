@@ -19,7 +19,12 @@
     "test:watch": "vitest",
     "test:cov": "vitest run --coverage",
     "test:debug": "vitest --inspect-brk --no-file-parallelism",
-    "test:e2e": "vitest run --config ./vitest.config.e2e.ts"
+    "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
+    "test:multi-instance": "npm run build && node scripts/multi-instance-smoke.mjs",
+    "test:load-balancer": "node scripts/load-balancer-smoke.mjs",
+    "lb:up": "docker compose up --build -d --wait",
+    "lb:down": "docker compose down",
+    "lb:logs": "docker compose logs -f haproxy app1 app2"
   },
   "dependencies": {
     "@nestjs/common": "^12.0.1",

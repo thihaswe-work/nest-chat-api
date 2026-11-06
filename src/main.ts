@@ -1,8 +1,10 @@
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { ValidationPipe } from '@nestjs/common';
+import type { NextFunction, Request, Response } from 'express';
 import { AppModule } from './app.module.js';
 import { RedisIoAdapter } from './chat/redis-io.adapter.js';
+import { getInstanceId } from './common/instance-info.js';
 
 /**
  * Application entry point.
@@ -19,6 +21,14 @@ import { RedisIoAdapter } from './chat/redis-io.adapter.js';
  */
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+
+  // Stamp every HTTP response with the replica that produced it. This is the
+  // fastest way to see the load balancer working:
+  //   for i in $(seq 1 6); do curl -si localhost:8080/instance | grep -i x-instance; done
+  app.use((_request: Request, response: Response, next: NextFunction) => {
+    response.setHeader('X-Instance-Id', getInstanceId());
+    next();
+  });
 
   // Validate and transform every HTTP request body/query.
   //   whitelist:            drop properties that have no DTO decorator

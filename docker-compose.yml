@@ -1,0 +1,122 @@
+# Local "production-shaped" stack:
+#
+#   client -> HAProxy :8080 -> app1 / app2 -> PostgreSQL, MongoDB, Redis
+#
+# Start it with:   docker compose up --build -d
+# Watch logs:      docker compose logs -f haproxy app1 app2
+# Tear it down:    docker compose down -v   (the -v also deletes the data volumes)
+#
+# The database ports are intentionally NOT published to the host, so this stack
+# does not collide with PostgreSQL/MongoDB/Redis you may already run locally.
+
+name: scaling-messenger
+
+# Shared configuration for the two identical application replicas. YAML anchors
+# keep app1 and app2 from drifting apart.
+x-app-base: &app-base
+  build:
+    context: .
+    dockerfile: Dockerfile
+  environment:
+    NODE_ENV: production
+    PORT: 3000
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: 5432
+    POSTGRES_USER: postgres
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secret}
+    POSTGRES_DB: chatapp
+    MONGO_URI: mongodb://mongo:27017/chatapp
+    REDIS_URL: redis://redis:6379
+    # Both replicas MUST use the same secret, otherwise a token issued by app1
+    # is rejected by app2. Override this in your shell for anything real:
+    #   JWT_SECRET=$(openssl rand -hex 32) docker compose up --build -d
+    JWT_SECRET: ${JWT_SECRET:-local-load-balancer-secret-change-me}
+    JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-1d}
+  depends_on:
+    postgres:
+      condition: service_healthy
+    mongo:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  healthcheck:
+    # The base image is Node 24, so global fetch is available.
+    test:
+      [
+        "CMD-SHELL",
+        "node -e \"fetch('http://127.0.0.1:3000/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\"",
+      ]
+    interval: 5s
+    timeout: 5s
+    retries: 20
+    start_period: 20s
+  restart: unless-stopped
+  stop_grace_period: 10s
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secret}
+      POSTGRES_DB: chatapp
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d chatapp']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  mongo:
+    image: mongo:7
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          "mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok' | grep -q 1",
+        ]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  app1:
+    <<: *app-base
+    # The hostname is what GET /instance reports, so the load balancer is easy
+    # to observe from the outside.
+    hostname: app1
+
+  app2:
+    <<: *app-base
+    hostname: app2
+
+  haproxy:
+    image: haproxy:3.0-alpine
+    ports:
+      - '8080:80' # application traffic
+      - '8404:8404' # HAProxy statistics page
+    volumes:
+      - ./deploy/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+      app1:
+        condition: service_healthy
+      app2:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  mongo-data:
+  redis-data:

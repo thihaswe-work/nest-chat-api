@@ -22,6 +22,7 @@ This README is written for someone new to the codebase. Read the
 | Feature | Status | Where |
 | --- | --- | --- |
 | Public health check (`GET /`) | ✅ Working | `app.controller.ts` |
+| Replica identity (`GET /instance`) | ✅ Working (public) | `app.controller.ts`, `common/instance-info.ts` |
 | Register (`POST /auth/register`) | ✅ Working (scrypt hashing + JWT) | `auth/*`, `users/*` |
 | Login (`POST /auth/login`) | ✅ Working (JWT) | `auth/*` |
 | Current profile (`GET /users/me`) | ✅ Working (protected) | `users/users.controller.ts` |
@@ -31,6 +32,7 @@ This README is written for someone new to the codebase. Read the
 | Join a chat room over WebSockets | ✅ Working (members only) | `chat/chat.gateway.ts` |
 | Send + broadcast a message | ✅ Working (author from token) | `chat/chat.gateway.ts` |
 | Multi-instance WebSocket scaling | ✅ Working when Redis is available | `chat/redis-io.adapter.ts` |
+| Load-balanced HTTP + WebSocket (HAProxy) | ✅ Working (Docker Compose) | `docker-compose.yml`, `deploy/haproxy/*` |
 | Input validation | ✅ Working (`class-validator` + global pipe) | `main.ts`, `**/dto/*` |
 | Refresh tokens / logout revocation / roles | ❌ Not implemented | — |
 
@@ -49,6 +51,8 @@ This README is written for someone new to the codebase. Read the
 | **PostgreSQL + TypeORM** | Relational data | Users, conversations, participant join table |
 | **MongoDB + Mongoose** | Message history | High-volume, flexible documents |
 | **Redis + Socket.IO adapter** | Cross-instance pub/sub | Lets N servers broadcast to each other |
+| **HAProxy** | Local load balancer | Round robin, sticky cookies, WebSocket tunneling |
+| **Docker Compose** | Local multi-service stack | Two app replicas + databases behind one command |
 | **JWT (`@nestjs/jwt`)** | Session tokens | Stateless auth that works across instances |
 | **Node `scrypt`** | Password hashing | Memory-hard, no native dependency |
 | **class-validator / class-transformer** | Input validation | Reject malformed HTTP payloads |
@@ -288,8 +292,11 @@ the initial handshake must be consistent.
 src/
 ├── main.ts                          # Bootstraps Nest, ValidationPipe, Redis adapter, listen
 ├── app.module.ts                    # Composition root: config, DBs, auth, global guard
-├── app.controller.ts                # Public GET / health route
+├── app.controller.ts                # Public GET / and GET /instance
 ├── app.service.ts                   # Health route logic
+│
+├── common/
+│   └── instance-info.ts             # hostname:pid identity for /instance + WS acks
 │
 ├── auth/                            # Authentication (identity)
 │   ├── auth.module.ts               # @Global: JwtModule + AuthService
@@ -331,6 +338,21 @@ src/
 └── database/                        # Empty placeholders; real config is in app.module.ts
     ├── mongo.module.ts
     └── postgres.module.ts
+```
+
+Repository-level files that make the multi-instance setup runnable:
+
+```
+Dockerfile                           # Multi-stage production image for the app
+docker-compose.yml                   # 2 app replicas + Postgres + Mongo + Redis + HAProxy
+.dockerignore
+deploy/haproxy/
+├── haproxy.cfg                      # Compose backends: app1:3000, app2:3000
+└── haproxy.local.cfg                # Host backends: 127.0.0.1:3100, 127.0.0.1:3200
+
+scripts/
+├── multi-instance-smoke.mjs         # Two local processes, no load balancer
+└── load-balancer-smoke.mjs          # Everything through HAProxy :8080
 ```
 
 Tests live next to their source (e.g. `src/users/password.service.spec.ts`).
@@ -432,6 +454,20 @@ Subclasses Nest's `IoAdapter`, connects two `ioredis` clients, and attaches the
 official Socket.IO Redis adapter to the server Nest creates. Read the comments at
 the top of the file for the multi-instance explanation.
 
+### Step 7 — The load balancer: `docker-compose.yml` + `deploy/haproxy/`
+
+```
+curl :8080/instance ──► HAProxy ──► app1 / app2
+                          │
+                          ├─ round robin for new clients
+                          ├─ SERVERID cookie for sticky polling
+                          └─ /stats on :8404
+```
+
+`GET /instance` and the `X-Instance-Id` header come from
+`src/common/instance-info.ts`. They turn "is the load balancer working?" into a
+one-line curl loop. The automated proof is `scripts/load-balancer-smoke.mjs`.
+
 ---
 
 ## 8. File-by-file reference
@@ -440,8 +476,9 @@ the top of the file for the multi-instance explanation.
 | --- | --- | --- |
 | `src/main.ts` | Validation pipe, Redis adapter, listen | Bootstrap, top-level await |
 | `src/app.module.ts` | Wires config, DBs, features, global guard | Composition root, `APP_GUARD` |
-| `src/app.controller.ts` | Public `GET /` | `@Public()` |
+| `src/app.controller.ts` | Public `GET /`, `GET /instance` | `@Public()` |
 | `src/app.service.ts` | Returns `"Hello World!"` | Injectable service |
+| `src/common/instance-info.ts` | Replica identity (`hostname:pid`) | Observing load balancing |
 | `src/auth/auth.module.ts` | Global JWT module + auth controller | `@Global`, `JwtModule.registerAsync` |
 | `src/auth/auth.controller.ts` | `POST /auth/register`, `POST /auth/login` | Public endpoints |
 | `src/auth/auth.service.ts` | Register/login + sign JWT | JWT payload `{ sub, username }` |
@@ -471,6 +508,11 @@ the top of the file for the multi-instance explanation.
 | `src/chat/chat.module.ts` | Gateway + model + conversations | Module-scoped providers |
 | `src/chat/redis-io.adapter.ts` | Redis pub/sub for Socket.IO | Horizontal scaling |
 | `src/database/*.ts` | Empty placeholders | Real config is in `AppModule` |
+| `Dockerfile` | Builds the production app image | Multi-stage build, non-root user |
+| `docker-compose.yml` | Two replicas + DBs + HAProxy | Compose healthchecks, YAML anchors |
+| `deploy/haproxy/haproxy.cfg` | Load balancing for Compose | Round robin, `SERVERID` cookie |
+| `deploy/haproxy/haproxy.local.cfg` | Load balancing for host processes | Same config, localhost backends |
+| `scripts/load-balancer-smoke.mjs` | End-to-end LB verification | Distribution, stickiness, WS, Redis |
 
 Every source file contains inline comments explaining its responsibilities,
 security decisions, and non-obvious behavior.
@@ -640,6 +682,16 @@ Both return:
 | --- | --- | --- |
 | `GET` | `/users/me` | Current authenticated user |
 
+### System
+
+| Method | Path | Auth | Result |
+| --- | --- | --- | --- |
+| `GET` | `/` | Public | `Hello World!` |
+| `GET` | `/instance` | Public | `{ id, hostname, pid, startedAt }` for the replica that answered |
+
+Every HTTP response also carries an `X-Instance-Id` header, which is handy when
+curling through a load balancer.
+
 ### Conversations
 
 | Method | Path | Body / query | Rule |
@@ -674,6 +726,9 @@ when a conversation is removed.
 | client → server | `message:send` | `{ conversationId, body }` |
 | server → client | `message:new` | saved message document |
 
+Acknowledgements for `conversation:join` and `message:send` include an
+`instance` field (`hostname:pid`) so you can see which replica handled the event.
+
 `senderId` is **not** accepted from clients; it always comes from the JWT.
 
 ---
@@ -702,6 +757,10 @@ A tracked template lives in `.env.example`.
 > (`openssl rand -hex 32`). The app refuses to start without it when
 > `NODE_ENV=production`.
 
+Inside Docker Compose, `POSTGRES_HOST` becomes `postgres`, `MONGO_URI` points at
+`mongo`, and `REDIS_URL` points at `redis`; those values are set in
+`docker-compose.yml`, so no host `.env` changes are required.
+
 ---
 
 ## 13. Running the project
@@ -712,8 +771,15 @@ A tracked template lives in `.env.example`.
 - PostgreSQL
 - MongoDB
 - Redis (optional: without it the app starts in single-instance mode)
+- Docker Desktop (optional, for the load-balanced stack)
 
 ### Quick-start the dependencies with Docker
+
+The fastest route is the full stack in `docker-compose.yml` (databases +
+two app replicas + HAProxy). See
+[Run behind a load balancer](#run-behind-a-load-balancer-haproxy--docker-compose).
+
+To run only the databases and start the app on the host instead:
 
 ```bash
 docker run -d --name chat-postgres -p 5432:5432 \
@@ -829,6 +895,295 @@ To prove Redis scaling, run two instances on different ports, connect one client
 to each with valid tokens, join the same conversation, and send a message. Both
 clients should receive it.
 
+### Test with multiple instances
+
+A repeatable smoke test is included:
+
+```bash
+npm run test:multi-instance
+```
+
+It builds the app, starts **two instances** (ports `3100` and `3200` by default),
+and verifies the behavior that only works when instances cooperate:
+
+1. Both instances log that they connected to Redis (the test fails early with a
+   clear message if Redis is down and the in-memory fallback is active).
+2. A JWT issued by instance A is accepted by instance B.
+3. One client connects to A and another to B, and both join the same room.
+4. A message sent through A arrives at the client connected to B.
+5. A spoofed `senderId` is ignored; the stored sender is the JWT user.
+6. A non-member is rejected on instance B.
+
+Expected tail:
+
+```
+PASS  client on instance B receives the message through Redis
+PASS  non-member is rejected on instance B
+16 passed, 0 failed
+MULTI-INSTANCE TEST PASSED
+```
+
+Override the ports if needed:
+
+```bash
+INSTANCE_A_PORT=4100 INSTANCE_B_PORT=4200 npm run test:multi-instance
+```
+
+#### Manual version
+
+```bash
+npm run build
+
+# Terminal 1
+PORT=3100 node dist/main.js
+
+# Terminal 2
+PORT=3200 node dist/main.js
+```
+
+Then, for each client:
+
+1. Register a user and copy the `accessToken`.
+2. Create a conversation with the other user's id.
+3. Connect with `io('http://localhost:3100', { auth: { token }, transports: ['websocket'] })`
+   from one client and `io('http://localhost:3200', ...)` from the other.
+4. Emit `conversation:join` with the same `conversationId` on both.
+5. Emit `message:send` from one socket and confirm the other receives
+   `message:new`.
+
+**Things that must match across instances:**
+
+- The same `JWT_SECRET` (otherwise a token from A is rejected by B with 401).
+- The same `REDIS_URL` and adapter `key` (`chatapp-socket`); otherwise each
+  instance keeps its own rooms and no broadcast crosses instances.
+- The same PostgreSQL and MongoDB, so both instances see the same users,
+  conversations, and message history.
+- Behind a real load balancer, enable **sticky sessions** if clients may use
+  HTTP polling. The test forces `transports: ['websocket']`, so it does not need
+  stickiness.
+
+### Run behind a load balancer (HAProxy + Docker Compose)
+
+`docker-compose.yml` starts a complete local stack:
+
+```
+                    Browser / curl / Socket.IO client
+                                   │
+                                   │ :8080
+                                   ▼
+                         ┌───────────────────┐
+                         │      HAProxy      │
+                         │  round robin      │
+                         │  SERVERID cookie  │
+                         │  stats on :8404   │
+                         └───────┬───────────┘
+                                 │
+                 ┌───────────────┴───────────────┐
+                 ▼                               ▼
+          ┌─────────────┐                 ┌─────────────┐
+          │    app1     │                 │    app2     │
+          │ NestJS :3000│                 │ NestJS :3000│
+          └──┬───┬───┬──┘                 └──┬───┬───┬──┘
+             │   │   │                       │   │   │
+             │   │   └───────────┬───────────┘   │   │
+             │   │               ▼               │   │
+             │   │        Redis pub/sub          │   │
+             │   │      (Socket.IO adapter)      │   │
+             │   │                               │   │
+             │   └──────────► PostgreSQL ◄───────┘   │
+             │               (users, conversations)  │
+             │                                        │
+             └──────────────► MongoDB ◄───────────────┘
+                              (messages)
+```
+
+The two app containers use the **same** PostgreSQL, MongoDB, Redis, and
+`JWT_SECRET`. That is what makes them interchangeable: any replica can verify a
+token and read the same data, and Redis forwards a room broadcast to the replica
+that owns each socket.
+
+#### Start the stack
+
+```bash
+npm run lb:up          # docker compose up --build -d --wait
+docker compose ps      # everything should be "healthy"
+npm run lb:logs        # follow HAProxy + app logs
+```
+
+Or directly:
+
+```bash
+docker compose up --build -d --wait
+```
+
+The first build takes a few minutes (it installs npm dependencies inside the
+image). Subsequent starts are fast. The stack publishes only:
+
+| Port | What |
+| --- | --- |
+| `8080` | Application traffic through HAProxy |
+| `8404` | HAProxy statistics page |
+
+The database ports are **not** published, so this does not collide with the
+PostgreSQL/MongoDB/Redis you may already run on the host.
+
+#### See the load balancer work
+
+Round robin (new TCP connection per request, so HAProxy alternates):
+
+```bash
+for i in 1 2 3 4 5 6; do
+  curl -s http://localhost:8080/instance
+  echo
+done
+```
+
+Expected: alternating `app1:1` and `app2:1` ids.
+
+Every response also has an `X-Instance-Id` header, and the first response sets a
+sticky cookie:
+
+```bash
+curl -si http://localhost:8080/instance | grep -iE 'HTTP/|x-instance-id|set-cookie'
+```
+
+```text
+HTTP/1.1 200 OK
+x-instance-id: app2:1
+set-cookie: SERVERID=app2; path=/; HttpOnly
+```
+
+Send that cookie back and every request stays on the same replica:
+
+```bash
+curl -s -c /tmp/lb-cookie.txt http://localhost:8080/instance >/dev/null
+
+for i in 1 2 3 4 5; do
+  curl -s -b /tmp/lb-cookie.txt http://localhost:8080/instance
+  echo
+done
+```
+
+Expected: the same id every time. This is the **sticky session** that Socket.IO
+HTTP polling needs.
+
+Open <http://localhost:8404> for HAProxy's live stats page (per-server request
+counts, health, response times).
+
+#### Automated end-to-end test
+
+With the stack running:
+
+```bash
+npm run test:load-balancer
+```
+
+The script talks only to `http://localhost:8080` and verifies:
+
+1. `/instance` is reachable and reports `app1` / `app2`.
+2. Six independent requests are spread across both replicas.
+3. The `SERVERID` cookie pins subsequent requests to one replica.
+4. Registration, login, and `GET /users/me` work through the balancer.
+5. A JWT issued on one replica is accepted by whichever replica answers next.
+6. Two WebSocket clients land on **different** replicas.
+7. A message sent through one replica reaches the client on the other replica
+   through Redis.
+8. A spoofed `senderId` is ignored and the JWT user is stored instead.
+9. A non-member is rejected behind the balancer.
+10. The HAProxy stats page is reachable.
+
+Verified output:
+
+```text
+      round-robin ids: app1:1, app2:1, app1:1, app2:1, app1:1, app2:1
+      sticky ids:       app2:1, app2:1, app2:1, app2:1, app2:1
+      alice on app1:1, bob on app2:1
+...
+21 passed, 0 failed
+LOAD-BALANCER TEST PASSED
+```
+
+If you need different endpoints:
+
+```bash
+LB_URL=http://localhost:8080 LB_STATS_URL=http://localhost:8404 \
+  npm run test:load-balancer
+```
+
+#### WebSocket through the load balancer
+
+```js
+import { io } from 'socket.io-client';
+
+const socket = io('http://localhost:8080', {
+  auth: { token: accessToken },
+  // For a Node client, force WebSocket. If you use HTTP polling instead, the
+  // client must keep and resend HAProxy's SERVERID cookie (browsers do this
+  // automatically; Node's socket.io-client does not).
+  transports: ['websocket'],
+});
+
+socket.on('connect', () => {
+  socket.emit('conversation:join', { conversationId: 1 }, (ack) => {
+    console.log('handled by replica:', ack.instance); // "app1:1" or "app2:1"
+  });
+});
+```
+
+#### Run it without Docker
+
+If you prefer direct processes, install HAProxy once
+(`brew install haproxy`) and use the host config:
+
+```bash
+npm run build
+
+# Terminal 1
+PORT=3100 node dist/main.js
+
+# Terminal 2
+PORT=3200 node dist/main.js
+
+# Terminal 3 (host backends: 127.0.0.1:3100 and 127.0.0.1:3200)
+haproxy -f deploy/haproxy/haproxy.local.cfg
+
+# Terminal 4
+npm run test:load-balancer
+```
+
+`haproxy.local.cfg` binds the same ports (`8080` and `8404`), so the test and the
+curl examples above work unchanged. The app processes use your host PostgreSQL,
+MongoDB, and Redis.
+
+#### Add a third replica
+
+With Compose, add one service and one backend line:
+
+```yaml
+  app3:
+    <<: *app-base
+    hostname: app3
+```
+
+```haproxy
+    server app3 app3:3000 check cookie app3
+```
+
+Then `docker compose up -d --build`. With Kubernetes or Nomad, register the pods
+in a Service and let the ingress/service balance instead of hard-coding backends.
+
+#### Production notes
+
+- Terminate TLS at the load balancer and add `secure` to the sticky cookie.
+- Never expose the HAProxy stats port publicly; add `stats auth user:password`
+  or keep it on an internal interface.
+- Use a real secret: `JWT_SECRET=$(openssl rand -hex 32) docker compose up -d`.
+- All replicas need the same `JWT_SECRET`, `REDIS_URL`, PostgreSQL, and MongoDB.
+- Replace `synchronize: true` with migrations before using a shared database.
+- Sticky sessions are mandatory for browser clients that may fall back to HTTP
+  polling. WebSocket-only clients do not strictly need them, but keeping the
+  cookie makes reconnect behavior predictable.
+
 ---
 
 ## 14. Design decisions and trade-offs
@@ -843,6 +1198,8 @@ clients should receive it.
 | Owner + participant roles | Simple, understandable permission model | No moderator/admin roles yet |
 | Separate Postgres and Mongo | Each store does what it is best at | No cross-DB transactions |
 | Redis adapter | Stateless instances scale horizontally | Extra infrastructure; sticky sessions at the LB |
+| HAProxy round robin + cookie | Simple, observable local LB; polling keeps its session | Cookie must be preserved by non-browser clients; static backend list |
+| `GET /instance` + `X-Instance-Id` | Makes distribution and stickiness visible | Exposes hostname/pid (no secrets) |
 | `synchronize: true` | Zero-setup local schema | Can alter/drop data; never use in production |
 | Server-side broadcast | Sender and others see the same canonical document | Sender gets no optimistic UI |
 
@@ -877,7 +1234,9 @@ clients should receive it.
 - [ ] Add structured logging, metrics, and tracing (never log tokens/passwords).
 - [ ] Add e2e tests for auth, authorization, and WebSocket events.
 - [ ] Add graceful shutdown for Redis/DB connections.
-- [ ] Run multiple instances behind a load balancer with sticky sessions.
+- [ ] Replace the static HAProxy backend list with service discovery (DNS SRV,
+      Kubernetes Service, or Consul) when running more than a few replicas.
+- [ ] Protect the HAProxy stats page and terminate TLS at the balancer.
 
 ---
 
@@ -919,5 +1278,13 @@ npm run lint         # oxlint
 npm run format       # prettier
 npm test             # vitest unit tests (password hashing)
 npm run test:e2e     # vitest e2e tests (none yet)
+npm run test:multi-instance  # two live instances + Redis cross-instance check
+npm run test:load-balancer   # everything through HAProxy on :8080
 npm run test:cov     # coverage
+
+# Load-balancer stack (Docker Compose)
+npm run lb:up        # build + start + wait for health
+npm run lb:logs      # follow HAProxy and app logs
+npm run lb:down      # stop containers (data volumes are kept)
+docker compose down -v  # stop and delete the database volumes
 ```
