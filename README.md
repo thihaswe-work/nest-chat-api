@@ -1110,6 +1110,139 @@ LB_URL=http://localhost:8080 LB_STATS_URL=http://localhost:8404 \
   npm run test:load-balancer
 ```
 
+#### Clean rebuild from scratch
+
+The stack was verified from an empty state as well, not just incrementally:
+
+```bash
+docker compose down -v      # remove containers and database volumes
+npm run lb:up               # rebuild images, start, wait for health
+npm run test:load-balancer  # 21 passed, 0 failed
+```
+
+`down -v` deletes the users, conversations, and messages created by earlier test
+runs. The next `lb:up` recreates the schema (TypeORM `synchronize: true`), so a
+passing run confirms the tests do not depend on leftover data.
+
+#### Failover and recovery
+
+HAProxy checks `GET /` on each replica every 2 seconds with `fall 3` and
+`rise 2`, so a dead replica leaves rotation after about 6 seconds and returns
+after two successful checks.
+
+Stop one replica:
+
+```bash
+docker compose stop app2
+```
+
+Watch the health state through HAProxy's CSV stats endpoint:
+
+```bash
+curl -s 'http://localhost:8404/;csv' \
+  | awk -F, '$1=="app_servers" && $2!="BACKEND" { printf "%s %s\n", $2, $18 }'
+```
+
+```text
+app1 UP
+app2 DOWN
+```
+
+All new requests go to the surviving replica:
+
+```bash
+for i in $(seq 1 5); do curl -s http://localhost:8080/instance; echo; done
+```
+
+```text
+{"id":"app1:1","hostname":"app1","pid":1,...}
+{"id":"app1:1","hostname":"app1","pid":1,...}
+{"id":"app1:1","hostname":"app1","pid":1,...}
+{"id":"app1:1","hostname":"app1","pid":1,...}
+{"id":"app1:1","hostname":"app1","pid":1,...}
+```
+
+`option redispatch` also rescues a client whose sticky cookie still names the
+dead replica:
+
+```bash
+curl -si -H 'Cookie: SERVERID=app2' http://localhost:8080/instance \
+  | grep -iE 'HTTP/|x-instance-id|set-cookie'
+```
+
+```text
+HTTP/1.1 200 OK
+x-instance-id: app1:1
+set-cookie: SERVERID=app1; path=/; HttpOnly
+```
+
+Start it again:
+
+```bash
+docker compose start app2
+```
+
+After its health check passes, HAProxy marks `app2 UP`, round robin resumes, and
+the complete suite still passes:
+
+```bash
+curl -s 'http://localhost:8404/;csv' \
+  | awk -F, '$1=="app_servers" && $2!="BACKEND" { printf "%s %s\n", $2, $18 }'
+```
+
+```text
+app1 UP
+app2 UP
+```
+
+```bash
+npm run test:load-balancer
+```
+
+```text
+      round-robin ids: app1:1, app2:1, app1:1, app2:1, app1:1, app2:1
+...
+21 passed, 0 failed
+LOAD-BALANCER TEST PASSED
+```
+
+Existing WebSocket connections to the stopped replica drop; the Socket.IO client
+reconnects through HAProxy and lands on the healthy replica. HTTP requests that
+arrive during the roughly 6-second detection window can still receive a 502/503,
+so production clients should retry with backoff.
+
+#### Validate the configuration
+
+Validate the Compose file:
+
+```bash
+docker compose config --quiet && echo "compose config OK"
+```
+
+The Compose HAProxy config refers to the `app1` / `app2` service names, which
+only resolve inside the Compose network. Validate it from the running container
+or from a one-off container on that network:
+
+```bash
+docker compose exec -T haproxy \
+  haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg   # exit code 0
+```
+
+For the host config, either use a local HAProxy install:
+
+```bash
+haproxy -c -f deploy/haproxy/haproxy.local.cfg
+```
+
+or validate it with the container image (`haproxy.local.cfg` uses
+`127.0.0.1`, so it needs no Compose DNS):
+
+```bash
+docker run --rm \
+  -v "$PWD/deploy/haproxy/haproxy.local.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro" \
+  haproxy:3.0-alpine haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
+```
+
 #### WebSocket through the load balancer
 
 ```js
